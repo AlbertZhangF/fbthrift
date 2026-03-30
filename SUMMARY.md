@@ -955,13 +955,9 @@ package "Abstraction Layer" as ABS <<Rectangle>> LAYER_COLOR {
   [EventHandler] as EH
 }
 
-interface EventBaseBackend as EBB {
-  + poll(timeout)
-  + addEvent(fd, events)
-  + removeEvent(fd)
-}
-
 package "Backend Provider" as BACKEND <<Rectangle>> LAYER_COLOR {
+  interface EventBaseBackend as EBB
+  
   [EpollBackend] as EPOLL
   [IoUringBackend] as IOURING
   [KqueueBackend] as KQUEUE
@@ -978,10 +974,10 @@ package "System Calls" as SYS <<Rectangle>> LAYER_COLOR {
 EC --> EB : uses
 TS --> EB : uses
 EB --> EBB : uses
-EBB <|-- EPOLL
-EBB <|-- IOURING
-EBB <|-- KQUEUE
-EBB <|-- IOCP
+EBB <|-- EPOLL : implements
+EBB <|-- IOURING : implements
+EBB <|-- KQUEUE : implements
+EBB <|-- IOCP : implements
 
 EPOLL --> EPOLL_WAIT : calls
 IOURING --> IOURING_ENTER : calls
@@ -1001,6 +997,13 @@ end note
 note right of IOURING
   Linux 5.1+
   Higher performance
+end note
+
+note bottom of EBB
+  Backend interface methods:
+  - poll(timeout)
+  - addEvent(fd, events)
+  - removeEvent(fd)
 end note
 
 @enduml
