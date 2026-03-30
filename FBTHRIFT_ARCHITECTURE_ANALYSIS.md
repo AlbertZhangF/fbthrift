@@ -159,82 +159,297 @@ ThriftServer
 
 ## 模块交互关系图
 
-### 整体架构图
+### FBThrift运行期整体架构图
 
-```mermaid
-graph TB
-    subgraph "编译时"
-        A[.thrift文件] --> B[词法分析器 Lexer]
-        B --> C[语法分析器 Parser]
-        C --> D[AST构建]
-        D --> E[语义分析]
-        E --> F[代码生成器]
-        F --> G[生成的客户端代码]
-        F --> H[生成的服务端代码]
-    end
+```plantuml
+@startuml
+!define RECTANGLE class
+
+skinparam componentStyle rectangle
+skinparam backgroundColor #FEFEFE
+skinparam component {
+    BackgroundColor Client #E3F2FD
+    BackgroundColor Server #F3E5F5
+    BackgroundColor Network #FFF3E0
+    BorderColor #1976D2
+    ArrowColor #424242
+}
+
+package "客户端运行时" as ClientRuntime {
+    component "EchoAsyncClient\n(生成的异步客户端)" as Client #E3F2FD
+    component "RequestChannel\n(请求通道接口)" as Channel #BBDEFB
+    component "HeaderClientChannel\n(Header协议通道)" as HeaderChannel #BBDEFB
+    component "CompactProtocolWriter\n(序列化协议)" as ProtocolW #90CAF9
+    component "AsyncSocket\n(异步Socket)" as Socket #64B5F6
     
-    subgraph "运行时 - 客户端"
-        G --> I[GeneratedAsyncClient]
-        I --> J[RequestChannel]
-        J --> K[HeaderClientChannel/RocketClientChannel]
-        K --> L[Protocol序列化]
-        L --> M[AsyncSocket传输]
-    end
+    note right of Client
+        关键方法:
+        - sync_echo()
+        - future_echo()
+        - echo()
+    end note
     
-    subgraph "运行时 - 服务端"
-        N[AsyncServerSocket] --> O[EventBase事件循环]
-        O --> P[HeaderServerChannel]
-        P --> Q[Protocol反序列化]
-        Q --> R[ServiceHandler]
-        R --> S[用户实现的服务逻辑]
-    end
+    note right of Channel
+        核心接口:
+        - sendRequestResponse()
+        - sendRequestNoResponse()
+    end note
     
-    M <--> N
+    note right of ProtocolW
+        序列化操作:
+        - writeMessageBegin()
+        - writeString()
+        - writeStructBegin()
+    end note
+}
+
+package "网络传输层" as Network {
+    component "TCP连接" as TCP #FFF3E0
+    component "IOBuf\n(零拷贝缓冲区)" as IOBuf #FFE0B2
+    
+    note right of IOBuf
+        零拷贝特性:
+        - 避免数据拷贝
+        - 支持缓冲区链
+        - 共享所有权
+    end note
+}
+
+package "服务端运行时" as ServerRuntime {
+    component "AsyncServerSocket\n(监听Socket)" as ServerSocket #F3E5F5
+    component "EventBase\n(事件循环)" as EventBase #E1BEE7
+    component "HeaderServerChannel\n(服务端通道)" as ServerChannel #CE93D8
+    component "CompactProtocolReader\n(反序列化协议)" as ProtocolR #BA68C8
+    component "EchoHandler\n(服务处理器)" as Handler #AB47BC
+    component "用户服务逻辑" as BusinessLogic #9C27B0
+    
+    note right of ServerSocket
+        监听机制:
+        - accept新连接
+        - 分发到IO线程
+        - 管理连接池
+    end note
+    
+    note right of EventBase
+        事件驱动:
+        - IO事件处理
+        - 定时器管理
+        - 跨线程调度
+    end note
+    
+    note right of Handler
+        处理流程:
+        - echo(response, message)
+        - 业务逻辑执行
+        - 响应封装
+    end note
+}
+
+' 客户端流程
+Client --> Channel : 1. 获取Channel
+Channel --> HeaderChannel : 2. 使用Header协议
+HeaderChannel --> ProtocolW : 3. 序列化请求
+ProtocolW --> IOBuf : 4. 写入IOBuf
+IOBuf --> Socket : 5. 发送数据
+
+' 网络传输
+Socket --> TCP : 6. TCP传输
+TCP --> ServerSocket : 7. 到达服务端
+
+' 服务端流程
+ServerSocket --> EventBase : 8. 事件触发
+EventBase --> ServerChannel : 9. Channel处理
+ServerChannel --> ProtocolR : 10. 反序列化
+ProtocolR --> Handler : 11. 调用Handler
+Handler --> BusinessLogic : 12. 执行业务逻辑
+
+' 响应流程
+BusinessLogic --> Handler : 13. 返回结果
+Handler --> ProtocolR : 14. 序列化响应
+ProtocolR --> ServerChannel : 15. 发送响应
+ServerChannel --> TCP : 16. 网络传输
+TCP --> Socket : 17. 客户端接收
+Socket --> ProtocolW : 18. 反序列化
+ProtocolW --> Client : 19. 返回给用户
+
+@enduml
 ```
 
-### 编译器模块交互图
+### 客户端详细调用流程
 
-```mermaid
-sequenceDiagram
-    participant User as 用户
-    participant CLI as 命令行解析
-    participant Lexer as 词法分析器
-    participant Parser as 语法分析器
-    participant AST as AST构建器
-    participant Validator as 语义验证器
-    participant Generator as 代码生成器
-    
-    User->>CLI: thrift --gen cpp2 file.thrift
-    CLI->>Lexer: 读取.thrift文件
-    Lexer->>Parser: Token流
-    Parser->>AST: 构建AST节点
-    AST->>Validator: 验证AST
-    Validator->>Generator: 生成代码
-    Generator->>User: 输出生成的.cpp/.h文件
+```plantuml
+@startuml
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+
+actor "应用程序" as App
+participant "EchoAsyncClient\n(客户端对象)" as Client #E3F2FD
+participant "RpcOptions\n(RPC配置)" as Options #BBDEFB
+participant "CompactProtocolWriter\n(序列化器)" as Writer #90CAF9
+participant "IOBufQueue\n(缓冲区队列)" as Queue #64B5F6
+participant "HeaderClientChannel\n(通道)" as Channel #42A5F5
+participant "AsyncSocket\n(Socket)" as Socket #1E88E5
+participant "EventBase\n(事件循环)" as Evb #0D47A1
+
+== 初始化阶段 ==
+App -> Client : newClient<EchoAsyncClient>(evb, addr, "header")
+activate Client
+Client -> Channel : HeaderClientChannel::newChannel(socket)
+activate Channel
+Client <-- Channel : channel实例
+deactivate Client
+
+== RPC调用阶段 ==
+App -> Client : sync_echo(response, message)
+activate Client
+
+note right of Client
+  同步调用实现:
+  1. 创建Promise/Future
+  2. 发起异步调用
+  3. 阻塞等待结果
+end note
+
+Client -> Options : 创建RpcOptions
+activate Options
+Client -> Writer : 创建CompactProtocolWriter
+activate Writer
+Client -> Queue : 创建IOBufQueue
+activate Queue
+
+Writer -> Queue : setOutput(&queue)
+Writer -> Writer : writeMessageBegin("echo", CALL, seqId)
+Writer -> Writer : writeString(message)
+Writer -> Writer : writeMessageEnd()
+
+Queue -> Client : queue.move() -> IOBuf
+deactivate Queue
+deactivate Writer
+
+Client -> Channel : sendRequestResponse(rpcOptions, metadata, request, header, callback)
+activate Channel
+
+note right of Channel
+  Channel处理:
+  1. 构造消息头
+  2. 封装THeader
+  3. 分配seqId
+end note
+
+Channel -> Socket : write(IOBuf, callback)
+activate Socket
+Socket -> Evb : 注册可写事件
+activate Evb
+
+Evb -> Socket : 可写事件触发
+Socket -> Socket : 实际发送TCP数据
+deactivate Evb
+
+== 等待响应 ==
+Evb -> Socket : 可读事件触发
+activate Evb
+Socket -> Socket : 读取响应数据
+Socket -> Channel : 读取完成回调
+deactivate Socket
+
+Channel -> Client : callback->requestComplete()
+deactivate Channel
+
+Client -> Client : future.get()返回
+Client --> App : 返回response
+deactivate Client
+deactivate Options
+
+@enduml
 ```
 
-### 客户端调用流程图
+### 服务端详细处理流程
 
-```mermaid
-sequenceDiagram
-    participant App as 应用程序
-    participant Client as EchoAsyncClient
-    participant Channel as HeaderClientChannel
-    participant Protocol as CompactProtocol
-    participant Socket as AsyncSocket
-    participant Network as 网络
-    
-    App->>Client: sync_echo(message)
-    Client->>Protocol: 序列化请求
-    Protocol->>Channel: 发送序列化数据
-    Channel->>Socket: 写入IOBuf
-    Socket->>Network: 发送TCP数据
-    
-    Network->>Socket: 接收响应
-    Socket->>Channel: 读取IOBuf
-    Channel->>Protocol: 反序列化响应
-    Protocol->>Client: 返回结果
-    Client->>App: 返回response
+```plantuml
+@startuml
+skinparam backgroundColor #FEFEFE
+skinparam sequenceMessageAlign center
+
+participant "AsyncServerSocket\n(监听器)" as ListenSock #F3E5F5
+participant "EventBase\n(事件循环)" as Evb #E1BEE7
+participant "HeaderServerChannel\n(服务端通道)" as SvrChannel #CE93D8
+participant "CompactProtocolReader\n(反序列化器)" as Reader #BA68C8
+participant "EchoProcessor\n(处理器)" as Processor #AB47BC
+participant "EchoHandler\n(用户实现)" as Handler #9C27B0
+participant "CompactProtocolWriter\n(序列化器)" as Writer #BA68C8
+
+== 连接建立阶段 ==
+ListenSock -> Evb : 新连接到达
+activate ListenSock
+activate Evb
+Evb -> ListenSock : accept新连接
+ListenSock -> SvrChannel : 创建HeaderServerChannel
+activate SvrChannel
+SvrChannel -> Evb : 注册读事件
+deactivate ListenSock
+deactivate Evb
+
+== 请求处理阶段 ==
+Evb -> SvrChannel : 读事件触发
+activate Evb
+activate SvrChannel
+
+note right of SvrChannel
+  Channel处理:
+  1. 读取IOBuf
+  2. 解析THeader
+  3. 提取方法名
+end note
+
+SvrChannel -> Reader : 创建CompactProtocolReader
+activate Reader
+Reader -> Reader : setInput(IOBuf)
+Reader -> Reader : readMessageBegin(name, type, seqId)
+Reader -> Reader : readString(message)
+
+Reader -> Processor : 调用Processor::process()
+activate Processor
+
+note right of Processor
+  Processor处理:
+  1. 查找方法处理器
+  2. 调用Handler
+  3. 序列化响应
+end note
+
+Processor -> Handler : echo(response, message)
+activate Handler
+
+note right of Handler
+  用户实现:
+  void echo(string& response, 
+            unique_ptr<string> message) {
+    response = *message;
+  }
+end note
+
+Handler --> Processor : 返回response
+deactivate Handler
+
+Processor -> Writer : 序列化响应
+activate Writer
+Writer -> Writer : writeMessageBegin("echo", REPLY, seqId)
+Writer -> Writer : writeString(response)
+Writer -> Writer : writeMessageEnd()
+Writer --> Processor : IOBuf
+deactivate Writer
+
+Processor --> SvrChannel : 发送响应
+deactivate Processor
+deactivate Reader
+
+SvrChannel -> Evb : 注册写事件
+SvrChannel -> Evb : 写事件触发
+SvrChannel -> SvrChannel : 发送TCP数据
+deactivate SvrChannel
+deactivate Evb
+
+@enduml
 ```
 
 ---

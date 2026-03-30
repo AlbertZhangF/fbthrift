@@ -112,6 +112,17 @@ client->sync_echo(response, message);
   - Sync: 同步调用
   - Coro: 协程
 
+#### 关键发现 11: PlantUML架构图优化
+**文件**: `FBTHRIFT_ARCHITECTURE_ANALYSIS.md`
+**发现**:
+- 使用PlantUML替代Mermaid实现更清晰的架构图
+- 删除编译时部分，专注于运行期工作流
+- 细化关键操作和对象:
+  - 客户端: EventBase、AsyncClient、RequestChannel、Protocol、AsyncSocket
+  - 服务端: AsyncServerSocket、EventBase、ServerChannel、Processor、Handler
+  - 网络层: TCP连接、IOBuf零拷贝缓冲区
+- 突出显示关键方法和数据流
+
 ### RPC框架分析
 
 *待补充*
