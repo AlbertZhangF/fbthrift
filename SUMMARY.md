@@ -955,12 +955,13 @@ package "Abstraction Layer" as ABS <<Rectangle>> LAYER_COLOR {
   [EventHandler] as EH
 }
 
+interface EventBaseBackend as EBB {
+  + poll(timeout)
+  + addEvent(fd, events)
+  + removeEvent(fd)
+}
+
 package "Backend Provider" as BACKEND <<Rectangle>> LAYER_COLOR {
-  interface EventBaseBackend as EBB {
-    + poll(timeout)
-    + addEvent(fd, events)
-  }
-  
   [EpollBackend] as EPOLL
   [IoUringBackend] as IOURING
   [KqueueBackend] as KQUEUE
@@ -1169,8 +1170,6 @@ if (preferIoUring == true?) then (yes)
       - 提交队列(SQ): 提交IO请求
       - 完成队列(CQ): 获取IO结果
     end note
-    
-    (no)
   else (no)
     :使用传统epoll Socket;
   endif
