@@ -47,3 +47,5 @@ gen-cpp2
 /thrift/compiler/thrift1
 /thrift/compiler/thriftl.cc
 /thrift/compiler/thrifty.cc
+
+.trae/*
